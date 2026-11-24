@@ -1,5 +1,5 @@
 ---
-- name: Создание двух серверов в Cloud.ru
+- name: Создание серверов и получение их IP в Cloud.ru
   hosts: localhost
   connection: local
   gather_facts: false
@@ -20,7 +20,7 @@
 
   tasks:
 
-    - name: Получение токена Cloud.ru
+    - name: Получить токен Cloud.ru
       ansible.builtin.uri:
         url: https://iam.api.cloud.ru/api/v1/auth/token
         method: POST
@@ -28,10 +28,21 @@
         body:
           keyId: "{{ lookup('ini', 'CLOUDRU_KEY_ID type=properties file=/home/ramires/.config/cloudru/credentials') }}"
           secret: "{{ lookup('ini', 'CLOUDRU_KEY_SECRET type=properties file=/home/ramires/.config/cloudru/credentials') }}"
+        status_code: 200
       register: auth
       no_log: true
 
-    - name: Создание виртуальных машин
+    - name: Проверить существующие серверы
+      ansible.builtin.uri:
+        url: "https://compute.api.cloud.ru/api/v1/vms?project_id={{ project_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ auth.json.access_token }}"
+        status_code: 200
+      register: existing_vms
+      no_log: true
+
+    - name: Создать отсутствующие серверы
       ansible.builtin.uri:
         url: https://compute.api.cloud.ru/api/v1.1/vms
         method: POST
@@ -62,18 +73,73 @@
               public_key: "{{ lookup('file', '/home/ramires/.ssh/id_ed25519_ansible.pub') }}"
 
         status_code: 201
+
       loop: "{{ servers }}"
       loop_control:
         label: "{{ item.name }}"
-      register: result
-      failed_when: false
+
+      when: item.name not in (existing_vms.json['items'] | map(attribute='name') | list)
+      register: created_vms
       no_log: true
-    - name: Причина ошибки создания сборочного сервера
+
+    - name: Дождаться запуска серверов
+      ansible.builtin.uri:
+        url: "https://compute.api.cloud.ru/api/v1/vms?project_id={{ project_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ auth.json.access_token }}"
+        status_code: 200
+      register: vm_list
+      until: >
+        (
+          vm_list.json['items']
+          | selectattr('name', 'equalto', 'ansible-build')
+          | selectattr('state', 'equalto', 'running')
+          | list | length
+        ) == 1
+        and
+        (
+          vm_list.json['items']
+          | selectattr('name', 'equalto', 'ansible-prod')
+          | selectattr('state', 'equalto', 'running')
+          | list | length
+        ) == 1
+      retries: 30
+      delay: 10
+      no_log: true
+
+    - name: Получить IP сборочного и продового серверов
+      ansible.builtin.set_fact:
+        build_ip: "{{ (vm_list.json['items'] | selectattr('name', 'equalto', 'ansible-build') | first).interfaces[0].ip_address }}"
+        prod_ip: "{{ (vm_list.json['items'] | selectattr('name', 'equalto', 'ansible-prod') | first).interfaces[0].ip_address }}"
+
+    - name: Проверить полученные IP-адреса
+      ansible.builtin.assert:
+        that:
+          - build_ip | length > 6
+          - prod_ip | length > 6
+        fail_msg: "Не удалось получить IP-адреса серверов"
+        success_msg: "IP-адреса обоих серверов получены"
+
+    - name: Автоматически создать inventory.ini
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/inventory.ini"
+        mode: "0644"
+        content: |
+          [build]
+          ansible-build ansible_host={{ build_ip }}
+
+          [prod]
+          ansible-prod ansible_host={{ prod_ip }}
+
+          [all:vars]
+          ansible_user=ramires
+          ansible_ssh_private_key_file=/home/ramires/.ssh/id_ed25519_ansible
+          ansible_python_interpreter=/usr/bin/python3
+
+    - name: Показать адреса серверов
       ansible.builtin.debug:
         msg:
-          status: "{{ item.status | default(0) }}"
-          error: "{{ item.json | default(item.msg | default({})) }}"
-      loop: "{{ result.results }}"
-      loop_control:
-        label: "{{ item.item.name }}"
-
+          - "Сборочный сервер: {{ build_ip }}"
+          - "Продовый сервер: {{ prod_ip }}"
+          - "Inventory создан автоматически"

@@ -14,3 +14,5 @@ artifacts/
 # Временные файлы
 *.swp
 *.zip
+
+inventory.ini
