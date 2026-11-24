@@ -36,13 +36,11 @@
 13. Устанавливает Java, MySQL и Tomcat.
 14. Настраивает базу данных и запускает приложение.
 
-Дополнительно настроил Nginx для доступа к приложению по HTTP.
 
 ## Файлы проекта
 
 - create_vms.yml — создание серверов в Cloud.ru и получение IP.
 - deploy.yml — сборка и развёртывание Java-приложения.
-- nginx.yml — установка и настройка Nginx.
 - README.md — описание проекта.
 - .gitignore — исключение паролей и временных файлов из Git.
 
@@ -66,9 +64,7 @@ create_vms.yml и не хранится в GitHub.
 
     ansible-playbook -i inventory.ini deploy.yml
 
-Настраиваем Nginx:
 
-    ansible-playbook -i inventory.ini nginx.yml
 
 ## Проверка
 
@@ -138,13 +134,11 @@ The other two servers are created automatically using Ansible.
 13. It installs Java, MySQL and Tomcat.
 14. It configures the database and starts the application.
 
-I also configured Nginx for HTTP access to the application.
 
 ## Project Files
 
 - create_vms.yml — creates the servers and gets their IP addresses.
 - deploy.yml — builds and deploys the Java application.
-- nginx.yml — installs and configures Nginx.
 - README.md — project description.
 - .gitignore — excludes passwords and temporary files from Git.
 
@@ -168,9 +162,7 @@ Build and deploy the application:
 
     ansible-playbook -i inventory.ini deploy.yml
 
-Configure Nginx:
 
-    ansible-playbook -i inventory.ini nginx.yml
 
 ## Testing
 
