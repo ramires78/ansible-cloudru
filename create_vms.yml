@@ -1,0 +1,79 @@
+---
+- name: Создание двух серверов в Cloud.ru
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    project_id: "bff05599-f09b-4436-be35-975d31d7d8ce"
+    zone_id: "7c99a597-8516-494f-a2c7-d7377048681e"
+    image_id: "fe51a6e6-a5ad-410e-b441-1a195208a8cf"
+    disk_id: "a859e3dc-6b14-42a8-9bcc-890fde0ba6d0"
+    security_group_id: "1dbf054b-9bfb-46d1-87d4-fc0327e388cc"
+
+    servers:
+      - name: ansible-build
+        flavor: "5f71a5d8-073f-4eb8-b9b8-1499c7372819"
+
+      - name: ansible-prod
+        flavor: "139ddd16-2482-4694-991d-9b1834266e03"
+
+  tasks:
+
+    - name: Получение токена Cloud.ru
+      ansible.builtin.uri:
+        url: https://iam.api.cloud.ru/api/v1/auth/token
+        method: POST
+        body_format: json
+        body:
+          keyId: "{{ lookup('ini', 'CLOUDRU_KEY_ID type=properties file=/home/ramires/.config/cloudru/credentials') }}"
+          secret: "{{ lookup('ini', 'CLOUDRU_KEY_SECRET type=properties file=/home/ramires/.config/cloudru/credentials') }}"
+      register: auth
+      no_log: true
+
+    - name: Создание виртуальных машин
+      ansible.builtin.uri:
+        url: https://compute.api.cloud.ru/api/v1.1/vms
+        method: POST
+        headers:
+          Authorization: "Bearer {{ auth.json.access_token }}"
+        body_format: json
+        body:
+          - project_id: "{{ project_id }}"
+            availability_zone_id: "{{ zone_id }}"
+            name: "{{ item.name }}"
+            flavor_id: "{{ item.flavor }}"
+            image_id: "{{ image_id }}"
+
+            interfaces:
+              - type: direct_ip
+                new_external_ip: true
+                security_groups:
+                  - "{{ security_group_id }}"
+
+            disks:
+              - name: "{{ item.name }}-disk"
+                disk_type_id: "{{ disk_id }}"
+                size: 15
+
+            image_metadata:
+              hostname: "{{ item.name }}"
+              name: ramires
+              public_key: "{{ lookup('file', '/home/ramires/.ssh/id_ed25519_ansible.pub') }}"
+
+        status_code: 201
+      loop: "{{ servers }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: result
+      failed_when: false
+      no_log: true
+    - name: Причина ошибки создания сборочного сервера
+      ansible.builtin.debug:
+        msg:
+          status: "{{ item.status | default(0) }}"
+          error: "{{ item.json | default(item.msg | default({})) }}"
+      loop: "{{ result.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+

@@ -1,0 +1,182 @@
+---
+- name: Сборка Java-проекта
+  hosts: build
+  become: true
+
+  tasks:
+    - name: Установить Java, Maven и Git
+      ansible.builtin.apt:
+        name:
+          - openjdk-17-jdk
+          - maven
+          - git
+        state: present
+        update_cache: true
+
+    - name: Скачать проект из GitHub
+      ansible.builtin.git:
+        repo: https://github.com/ramires78/app42-java-mysql-docker-compose.git
+        dest: /home/ramires/app42
+        version: HEAD
+      become_user: ramires
+
+    - name: Собрать Java-приложение
+      ansible.builtin.command:
+        cmd: mvn clean package -DskipTests
+        chdir: /home/ramires/app42
+      become_user: ramires
+
+    - name: Найти собранный WAR
+      ansible.builtin.find:
+        paths: /home/ramires/app42/target
+        patterns: "*.war"
+        file_type: file
+      register: war_files
+
+    - name: Проверить наличие WAR
+      ansible.builtin.assert:
+        that:
+          - war_files.matched == 1
+
+    - name: Передать WAR на управляющий сервер
+      ansible.builtin.fetch:
+        src: "{{ war_files.files[0].path }}"
+        dest: ./artifacts/app42.war
+        flat: true
+
+
+- name: Настройка и запуск приложения на продовом сервере
+  hosts: prod
+  become: true
+
+  vars:
+    tomcat_version: "9.0.124"
+    tomcat_dir: "/opt/apache-tomcat-{{ tomcat_version }}"
+    tomcat_url: "https://downloads.apache.org/tomcat/tomcat-9/v{{ tomcat_version }}/bin/apache-tomcat-{{ tomcat_version }}.tar.gz"
+
+    db_name: app42
+    db_user: app42
+    db_password: "{{ lookup('ansible.builtin.password', playbook_dir ~ '/.app42_db_password length=24 chars=ascii_letters,digits') }}"
+
+  tasks:
+    - name: Установить Java и MySQL
+      ansible.builtin.apt:
+        name:
+          - openjdk-17-jre-headless
+          - mysql-server
+        state: present
+        update_cache: true
+
+    - name: Запустить MySQL и включить автозапуск
+      ansible.builtin.systemd:
+        name: mysql
+        state: started
+        enabled: true
+
+    - name: Создать базу данных и пользователя MySQL
+      ansible.builtin.shell: |
+        mysql <<'SQL'
+        CREATE DATABASE IF NOT EXISTS app42 CHARACTER SET utf8mb4;
+        CREATE USER IF NOT EXISTS 'app42'@'localhost' IDENTIFIED BY '{{ db_password }}';
+        ALTER USER 'app42'@'localhost' IDENTIFIED BY '{{ db_password }}';
+        GRANT ALL PRIVILEGES ON app42.* TO 'app42'@'localhost';
+        SQL
+      no_log: true
+      changed_when: false
+
+    - name: Настроить подключение приложения к MySQL
+      ansible.builtin.copy:
+        dest: /etc/app42.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          DB_HOST=127.0.0.1
+          DB_PORT=3306
+          DB_NAME={{ db_name }}
+          DB_USER={{ db_user }}
+          DB_PASSWORD={{ db_password }}
+      no_log: true
+      notify: Перезапустить Tomcat
+
+    - name: Скачать Tomcat на управляющий сервер
+      ansible.builtin.get_url:
+        url: "{{ tomcat_url }}"
+        dest: "{{ playbook_dir }}/artifacts/apache-tomcat-{{ tomcat_version }}.tar.gz"
+        checksum: "sha512:{{ tomcat_url }}.sha512"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Установить Tomcat на продовый сервер
+      ansible.builtin.unarchive:
+        src: "{{ playbook_dir }}/artifacts/apache-tomcat-{{ tomcat_version }}.tar.gz"
+        dest: /opt
+        remote_src: false
+        creates: "{{ tomcat_dir }}/bin/catalina.sh"
+
+    - name: Выдать права на Tomcat
+      ansible.builtin.file:
+        path: "{{ tomcat_dir }}"
+        owner: ramires
+        group: ramires
+        recurse: true
+
+    - name: Передать WAR на продовый сервер
+      ansible.builtin.copy:
+        src: ./artifacts/app42.war
+        dest: "{{ tomcat_dir }}/webapps/app42.war"
+        owner: ramires
+        group: ramires
+        mode: "0644"
+      notify: Перезапустить Tomcat
+
+    - name: Создать службу Tomcat
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tomcat9.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Apache Tomcat 9
+          After=network.target mysql.service
+          Requires=mysql.service
+
+          [Service]
+          Type=simple
+          User=ramires
+          Group=ramires
+          Environment=JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          Environment=CATALINA_HOME={{ tomcat_dir }}
+          EnvironmentFile=/etc/app42.env
+          ExecStart={{ tomcat_dir }}/bin/catalina.sh run
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Перезапустить Tomcat
+
+    - name: Запустить Tomcat и включить автозапуск
+      ansible.builtin.systemd:
+        name: tomcat9
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Применить изменения Tomcat
+      ansible.builtin.meta: flush_handlers
+
+    - name: Проверить ответ Java-приложения
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/app42/
+        status_code: 200
+      register: app_check
+      retries: 5
+      delay: 3
+      until: app_check.status == 200
+
+  handlers:
+    - name: Перезапустить Tomcat
+      ansible.builtin.systemd:
+        name: tomcat9
+        state: restarted
+        daemon_reload: true

@@ -1,0 +1,16 @@
+# Пароли и ключи
+.app42_db_password
+*.pem
+*.key
+credentials
+id_ed25519*
+
+# Собранные файлы
+artifacts/
+*.war
+*.jar
+*.tar.gz
+
+# Временные файлы
+*.swp
+*.zip
